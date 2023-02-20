@@ -1,0 +1,251 @@
+---
+title: "Bayesien_hw6"
+author: "Ching-Tsung_Deron_Tsai"
+date: "2022/12/11"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(coda)
+library(MCMCpack)
+library(msm)
+library(MASS)
+library(egg)
+sample.c = function(y, z) {    # according to p. 213 in textbook
+  a = max(z[y==0])
+  b = min(z[y==1])
+  u = runif(1, pnorm(a/tau), pnorm(b/tau)) 
+  update.c = 0+tau*qnorm(u)
+  return(update.c)
+}
+sample.beta = function(z, x) {
+  tau.2 = tau**2
+  m = tau.2 * sum(z*x)/(1+tau.2*sum(x**2)) 
+  v = tau.2 /(1+tau.2*sum(x**2)) 
+  update.beta = rnorm(1, m, sqrt(v))
+return(update.beta)
+}
+
+sample.z = function(y, x, beta, c) { 
+  u0 = runif(n, 0, pnorm(c-x*beta)) 
+  u1 = runif(n, pnorm(c-x*beta), 1) 
+  z0 = x*beta + qnorm(u0)
+  z1 = x*beta + qnorm(u1)
+return(z0*(!y)+z1*y) }
+```
+
+### 11.2
+
+**a**
+
+```{r}
+raw <- read.table("../HW_Q/pdensity.dat", header = T)
+testx = data.frame(density=seq(1,10,0.01)) # a seq of x for visualization
+fits <- lapply(1:10, function(i){         # regression fits of subgroups
+  df <- raw[raw$plot==i,]
+  fit <- lm(yield~poly(density,2), df)    # fit
+  list(fit=fit, prediction = predict(fit, testx), cov_mt = vcov(fit))
+})
+predictions <- sapply(fits, function(x) x[["prediction"]]) %>%  # merge the prediction value
+  data.frame(density_val=testx$density) 
+colnames(predictions)[1:10] <- 1:10
+p1 <- predictions %>%
+  pivot_longer(cols = colnames(predictions)[1:10], names_to = "plot", values_to = "predicted_yield") %>%
+  mutate(plot=factor(as.numeric(plot))) %>%
+  ggplot(aes(x=density_val, y=predicted_yield, col=plot)) +
+  geom_line() + ggtitle("OLS estimation")
+# -> overall trend were similar, use the mean of all groups as prior
+p1
+```
+
+**b**
+
+```{r}
+est <- NULL
+for (i in 1:10){
+  coefs <- fits[[i]][[1]] %>% summary() %>% coef()
+  output <- cbind(var = c("intercept", "density", "density2"), plot=i, theta = coefs[,1], residual_std_error = coefs[,2])
+  est <- rbind(est,output)
+}
+rownames(est) <- NULL
+# using the avg of diff subgroups as prior:
+avg <- data.frame(est) %>% 
+  mutate_at(vars(theta,residual_std_error), as.numeric) %>%
+  mutate(var = factor(var, levels=c("intercept", "density", "dinsity2"))) %>%
+  group_by(var) %>%
+  summarise(theta=mean(theta), sd = mean(residual_std_error))
+theta_hat = avg$theta
+var_hat = avg$sd
+
+
+Sigma = matrix(0, 3, 3)
+for (ele in fits){
+  Sigma = Sigma + ele[["cov_mt"]]
+}
+Sigma = Sigma/length(fits)  
+```
+
+**c**
+
+```{r}
+df = data.frame(y = raw$yield, x = raw$density, x2 = raw$density**2, group=raw$plot)  # input
+S = 2e4
+# set params according to MCMCpack doc
+r = 4    # Vb ∼ IWishart(r,rR)
+R = solve(Sigma)/r
+nu = 1   # sigma2 ∼ IGamma(nu,1/sigma)
+beta.start = mubeta = theta_hat  # default is the OLS estimation
+sigma2.start = var_hat
+delta = 1/var_hat[1]
+Vbeta = Sigma
+model <- MCMChregress(fixed=y~x+x2, random=~x+x2, group="group",
+              data=df, burnin=0, mcmc=S, thin=1,verbose=0,
+              seed=0, beta.start=beta.start, sigma2.start=1,
+              mubeta=mubeta, Vbeta=Vbeta,
+              r=r, R=R, nu=nu, delta=delta)                  
+posteriors <- model$mcmc[,1:33] 
+par(mfrow=c(2,2))
+# burnin:
+for (i in 1:33){plot(as.numeric(posteriors[,i]), type="l", main = colnames(posteriors)[i]) } 
+# didn't observe clear convergence -> 1000 as burnin
+for (i in 1:33){acf(posteriors[,i]) }  # none of them have > 20 autocorrelation
+par(mfrow=c(1,1))
+eff.posteriors <- posteriors[seq(1000,2e4,20),][,c(1:4, 6:13, 5, 14,16:23, 15, 24,26:33, 25)]  # thinning & burnin
+effectiveSize(eff.posteriors)
+# use the coef to draw line plot
+coefs <- summary(model$mcmc)$statistics
+share_coef <- coefs[1:3,1]
+coefs <- cbind(intercept=coefs[4:13,1], x = coefs[14:23, 1], x2=  coefs[24:33, 1])[c(1,3:10,2),] 
+testX <- cbind(1, seq(1,10,0.01), seq(1,10,0.01)**2)  # c(intercept, x, x^2)
+formulas <- NULL
+preds <- NULL
+for (j in 1:10){
+  intercept.j = coefs[j,1] ; beta.xj = coefs[j,2] ; beta.x2j = coefs[j,3]
+  form <- c(share_coef[1]+intercept.j,share_coef[2]+beta.xj, share_coef[3]+beta.x2j)
+  formulas <- rbind(formulas, form)
+  pred = testX %*% form
+  preds <- cbind(preds, pred)
+}
+preds <- data.frame(preds, density_val = seq(1,10,0.01))
+colnames(preds)[1:10] <- 1:10
+p2 <- preds %>%
+  pivot_longer(cols = colnames(preds)[1:10], names_to = "plot", values_to = "predicted_yield") %>%
+  mutate(plot=factor(as.numeric(plot))) %>%
+  ggplot(aes(x=density_val, y=predicted_yield, col=plot)) +
+  geom_line() + ggtitle("Posterior")
+grid.arrange(p1,p2, ncol=2)
+# -> Trends of some groups were different, especially when density around 5-8
+```
+
+**d**
+
+The posterior and prior coefficients in intercept were quite similar. Yet the both the density and polynomial term were pretty off. We may did a not so desirable guess for the betas of density & density^2. 
+
+```{r}
+# prior:
+set.seed(0)
+prior_theta <- mvrnorm(n = 1e4, mu = mubeta, Sigma = Sigma)
+colnames(prior_theta) <- c("Intercept", "x1: Density", "x2: Density_squared")
+lapply(1:3, function(i){
+  plot(density(prior_theta[,i]), main=colnames(prior_theta)[i], ylim=c(0,1.7))
+  lines(density(eff.posteriors[,i]))
+})
+
+# CI:
+rownames(formulas) <- 1:10  
+formulas    # posterior coefficients of different groups 
+apply(prior_theta, 2, quantile, c(0.025,0.5, 0.975)) %>% t()
+apply(eff.posteriors, 2, quantile, c(0.025,0.5, 0.975)) %>% t() # posterior CI
+```
+
+**e**
+
+Assuming that all plots have equal chances to be sampled. We can solve the max by the expected posterior betas.
+
+Let $X=$ density
+
+$$
+\frac{d}{dX}(\beta_0 + \beta_1 X + \beta_2 X^2) = 2\beta_2X + \beta_1=0 \\
+x_{max} = \frac{-\beta_1}{2\beta_2} \approx 5.93
+$$
+
+```{r}
+ex_coef = colMeans(formulas)
+xmax = -ex_coef[2]/(2*ex_coef[3])
+xmax
+# using only the effective samples for prediction:
+X_xmax = c(1,xmax,xmax**2)
+y_xmax <- sapply(1:nrow(eff.posteriors), function(i){
+  form = c(eff.posteriors[i,1]+mean(eff.posteriors[i,4:13]),  # mean of the coefficients
+           eff.posteriors[i,2]+mean(eff.posteriors[i,14:23]),
+           eff.posteriors[i,3]+mean(eff.posteriors[i,24:33]))
+  form %*% X_xmax
+})
+plot(density(y_xmax), main = "Y from x max")
+abline(v=quantile(y_xmax,c(0.025, 0.975)), col="red")
+```
+
+
+### 6.3 (d)
+
+```{r}
+raw <- read.table("../HW_Q/divorce.dat")
+n = nrow(raw)
+x = raw[,1]
+y = raw[,2]
+tau = sqrt(16)       # sd for both beta & c
+B = 5e4              # iteration
+
+# initial values:
+beta = 0
+g = 1
+z = rep(0, n)
+# didn't use MCMCpack because does not support settings of c:
+# MCMCprobit(y~x, data = df6.3, 
+#            burnin = 0, 
+#            mcmc = B
+#            )
+Beta = NULL  
+Z = NULL
+Z = rbind(Z,z)
+set.seed(0)
+for (i in 1:B){
+  beta = sample.beta(z,x)
+  g = sample.c(y,z)         # g == c
+  z = sample.z(y,x,beta,g)
+  Beta = c(Beta,beta)
+}
+# Diagnosis
+effectiveSize(Beta)
+plot(Beta, type="l")     # no clear burn-in, choose 2000
+acf(Beta, xlim=c(0,60))  # 47 for thinning
+eff.Beta <- Beta[seq(2000,5e4,47)]
+effectiveSize(eff.Beta)
+# 95%CI:
+(ci = quantile(eff.Beta, c(0.025, 0.975)))
+plot(density(eff.Beta))
+abline(v=ci, col="red")
+
+# Prob. of beta > 0:
+mean(eff.Beta>0)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+

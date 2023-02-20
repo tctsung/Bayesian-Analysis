@@ -1,0 +1,374 @@
+---
+title: "Bayesien_hw3"
+author: "Ching-Tsung_Deron_Tsai"
+date: "2022/10/31"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(MCMCpack)
+library(MASS)
+library(spam)
+library(ggpubr)
+# functions for updating parameters in multivariate normal model:
+sample.theta <- function(ybar,mu0,Lambda0,n,Sigma){
+	iLambda0 <- solve(Lambda0)  # prior precision matrix
+	iSigma <- solve(Sigma)      # data precision matrix
+	post.prec <- n*iSigma + iLambda0  # posterior precision matrix
+	post.var <- solve(post.prec)  # posterior variance matrix
+	post.mean <- post.var%*%(iLambda0%*%mu0 + n*iSigma%*%ybar) # posterior mean
+	new.theta <- mvrnorm(1,post.mean,post.var)
+	return(new.theta)
+}
+
+sample.Sigma <- function(y,theta,n,nu0,Phi0){
+	nu.n <- n+nu0    # posterior degrees of freedom
+	rss <- (t(y)-theta)%*%t(t(y)-theta)  # residual sum of squares
+	Phi.n <- Phi0+rss  
+	new.iSigma <- rwish(nu.n,solve(Phi.n))
+	new.Sigma <- solve(new.iSigma)
+	return(new.Sigma)
+}
+
+```
+
+### 6.1
+
+
+
+### 7.3
+
+**a**
+
+```{r q73a}
+blue <- read.table("../HW_Q/bluecrab.dat")
+orange <- read.table("../HW_Q/orangecrab.dat")
+lst <- list(blue,orange)
+# predifined values:
+B=1e4
+nu0 = 4
+# joint posterior of the two data: 
+posterior <- lapply(1:2, function(i){
+  # prior parameters & observation info:
+  n = nrow(lst[[i]])
+  mu0 = colMeans(lst[[i]])
+  s0 = cov(lst[[i]])
+  # to save posterior:
+  theta.MC <- matrix(0,B,2)
+  Sigma.MC <- array(0,dim=c(2,2,B))
+  # gibbs sampling:
+  set.seed(i)
+  for(j in 1:B){
+  	if(j==1){
+  		theta.MC[j,] <- mu0
+  		Sigma.MC[,,j] <- s0
+  	}
+  	if(j>1){
+  		theta.MC[j,] <- sample.theta(mu0,mu0,s0,n,Sigma.MC[,,(j-1)])	
+  		Sigma.MC[,,j] <- sample.Sigma(lst[[i]],theta.MC[j,],n,nu0,s0)
+  	}
+  }
+  return(list(mean=theta.MC, variance=Sigma.MC))
+})
+names(posterior) <- c("blue","orange")
+```
+
+**b**
+
+From the trace plot, the burning of blue crab is hard to identified, while the plot of orange crab seems to go up and be stable after first 1000 iterations. Therefore I set 1000 as burning period for both.
+
+Generally, both theta1 & theta 2 are larger in orange crab comparing to blue crab. According to 95% confidence interval of the Gibbs sampling, we can say theta 2 is larger in orange crab, while theta 1 may not have a significant difference. 
+
+```{r q73b} 
+blue.theta <- posterior$blue$mean
+orange.theta <- posterior$orange$mean
+data.frame(blue.theta,iteration=1:B) %>%
+  pivot_longer(cols=c("X1","X2"), names_to = "groups") %>%
+  ggplot() + geom_line(aes(x=iteration, y=value, col=groups,alpha=0.7))
+blue.theta <- blue.theta[-c(1:1000),]
+data.frame(orange.theta,iteration=1:B) %>%
+  pivot_longer(cols=c("X1","X2"), names_to = "groups") %>%
+  ggplot() + geom_line(aes(x=iteration, y=value, col=groups,alpha=0.7))
+orange.theta <- orange.theta[-c(1:1000),]
+ci <- apply(cbind(blue.theta,orange.theta), 2, quantile,c(0.025,0.975))
+colnames(ci) <- c("theta_1_blue","theta_2_blue","theta_1_orange","theta_2_orange")
+ci
+par(mfrow=c(1,2))
+plot(blue.theta[,1],blue.theta[,2], cex=0.3,main="CI of theta 1",
+     xlab = "theta1",ylab = "theta2",xlim = c(10,14),ylim=c(11,18), col="blue")
+points(orange.theta[,1],orange.theta[,2], cex=0.3,col="orange")
+abline(v = ci[,1], col = "blue",lty=2)
+abline(v = ci[,3], col = "orange",lty=2)
+plot(blue.theta[,1],blue.theta[,2], cex=0.3,main="CI of theta 2",
+     xlab = "theta1",ylab = "theta2",xlim = c(10,14),ylim=c(11,18), col="blue")
+points(orange.theta[,1],orange.theta[,2], cex=0.3,col="orange")
+abline(h = ci[,2], col = "blue",lty=2)
+abline(h = ci[,4], col = "orange",lty=2)
+par(mfrow=c(1,1))
+```
+
+**c**
+
+We can get the correlation from the covariance matrix via $CORR(X,Y)=\frac{COV(X,Y)}{SD(x)*SD(y)}$
+
+$\Pr(\rho_{\text{blue}}<\rho_{\text{orange}}|y_{\text{blue}},y_{\text{orange}})=0.9873$ in the posterior distribution I sampled. The result showed that the correlation is generally higher in group orange.
+
+```{r q73c}
+corr <- function(mx) mx[1,2] / (sqrt(mx[1,1])*sqrt(mx[2,2]))  # correlation
+posterior_corr <- lapply(posterior, function(dat){
+  apply(dat[["variance"]], 3, corr)
+})
+mean(posterior_corr$blue < posterior_corr$orange)
+data.frame(posterior_corr) %>%
+  pivot_longer(cols=c("blue","orange"), names_to = "group") %>%
+  ggplot(aes(x=value,fill=group)) +
+  geom_density(alpha=0.8) +
+  scale_fill_manual(values = c("blue" = "skyblue", "orange"="orange"))
+data.frame(posterior_corr) %>%
+  pivot_longer(cols=c("blue","orange"), names_to = "group") %>%
+  ggplot(aes(x=value,fill=group, ..scaled..)) +   # scaled to a probability density
+  geom_density(alpha=0.8) +
+  scale_fill_manual(values = c("blue" = "skyblue", "orange"="orange"))
+```
+
+### 7.4
+
+**a**
+
+```{r q74a}
+ages <- read.table("../HW_Q/agehw.dat", header = T)
+summary(ages) # summary stats
+# sample mean, cov, and number of observation:
+ybar <- colMeans(ages)
+n = nrow(ages)
+```
+
+We can get $\bar y=$ `r ybar` and n=`r n` from the data set.
+
+According to the 2021 Knot Real Wedding Study, average wedding age is 33 for women and 35 for men. While the average life expectancy in USA is 80 for women and 75 for men. I would give a very rough estimation for the prior mean as $\frac{80+33}{2}=56.5$ for women and $\frac{35+75}{2}=55$ for men. 
+
+I don't have any specific guess for the prior variance, therefore I would like to set a large range as a weak prior. Let's say $\Lambda_0=20^2=400$. Since husband and wife often have similar ages. I would set a relative high correlation 0.7. I would set a $\nu_0=4$ that is slightly higher than p=2, and $s_0=\Lambda_0$. 
+
+Now we have all the needed prior information for setting a semi-conjugate prior distribution.  
+
+\begin{align}
+0.7 = COV/(20*20) \to COV = 280 \\
+\theta =(\theta_h,\theta_w)^T \sim N(\mu_0,\Lambda_0) = N((55,56.5)^T, \begin{bmatrix}
+400 & 280\\ 
+280 & 400
+\end{bmatrix}) \\
+\Sigma \sim InverseWishart(4,\begin{bmatrix}
+400 & 280\\ 
+280 & 400
+\end{bmatrix}) 
+\end{align}
+
+**b**
+
+Using my beginning settings. The structure is a little bit different to the prior. After I made the variance smaller, several data set did have a highly correlated structure, and the mean is around the prior. If we compare the posterior(red dot) with observed data(blue dot), posterior also did contains the range of observations.
+
+```{r q74b}
+ybar <- colMeans(ages)
+n = nrow(ages)
+mu0 = c(55,56.5)
+#mu0 = ybar
+# s0 = lambda0 = matrix(c(400,280,280,400),nrow=2)
+s0 = lambda0 = matrix(c(225,157.5,157.5,225),nrow=2)
+# s0 = lambda0 = matrix(c(225,112.5,112.5,225),nrow=2)
+nu0 = 4
+B = 100
+nsets = 12   # number of repeat data set 
+set.seed(0)
+posterior <- lapply(1:nsets, function(i){
+  theta = rmvnorm(1, mu0, lambda0)
+  sigma = solve(rWishart(1, nu0, solve(s0))[, , 1])
+  Y.sim = rmvnorm(n, theta, sigma)
+})
+par(mfrow=c(2,3))
+for (i in 1:nsets){
+  val <- posterior[[i]]
+  plot(ages[,1],ages[,2], xlim = c(10,100), ylim = c(10,100),
+     xlab = "theta_h",ylab = "theta_w", col="blue")
+  points(val[,1],val[,2],col="red")
+}
+```
+
+**c**
+
+```{r q74c}
+B <- 1e4
+theta.MC <- matrix(0,B,2)
+Sigma.MC <- array(0,dim=c(2,2,B))
+s2 = cov(ages)
+set.seed(0)
+for (i in 1:B){
+  if(i==1){
+	    Sigma.MC[,,i] <- s2
+		  theta.MC[i,] <- ybar
+	} 
+  if (i>1){
+	    theta.MC[i,] <- sample.theta(ybar,mu0,lambda0,n,Sigma.MC[,,(i-1)])
+		  Sigma.MC[,,i] <- sample.Sigma(ages,theta.MC[i,],n,nu0,s0)
+	}
+}
+mcmc_q74 <- cbind(theta.MC,
+      sapply(1:B, function(i) corr(Sigma.MC[,,i])))
+colnames(mcmc_q74) <- c("Theta_h","Theta_w", "Correlation")
+# trace plot:
+par(mfrow=c(2,2))
+for (i in 1:3){
+  plot(mcmc_q74[,i], type="l", xlab = colnames(mcmc_q74)[i])
+}
+par(mfrow=c(1,1))
+mcmc_q74 <- mcmc_q74[-c(1:1000),]
+# visualization:
+ggplot(data.frame(mcmc_q74), aes(x=Theta_h, y=Theta_w)) +
+  geom_point(size=0.5, alpha=0.7)+ geom_density2d() 
+# 95% CI:
+apply(mcmc_q74,2,quantile,c(0.025,0.975))
+```
+
+**d and e** 
+
+According to the confidence interval, the prior I defined has a smaller range in correlations. But the range of theta didn't have much difference. I will say the help of the prior I defined is limited.
+
+```{r q74d}
+# diffuse prior:
+mu0 = c(0,0); lambda0 = 1e5*diag(2) ; s0 = 1000*diag(2) ; nu0=3
+B <- 1e4
+theta.MC <- matrix(0,B,2)
+Sigma.MC <- array(0,dim=c(2,2,B))
+s2 = cov(ages)
+set.seed(1)
+for (i in 1:B){
+  if(i==1){
+	    Sigma.MC[,,i] <- s2
+		  theta.MC[i,] <- ybar
+	} 
+  if (i>1){
+	    theta.MC[i,] <- sample.theta(ybar,mu0,lambda0,n,Sigma.MC[,,(i-1)])
+		  Sigma.MC[,,i] <- sample.Sigma(ages,theta.MC[i,],n,nu0,s0)
+	}
+}
+mcmc_diffuse <- cbind(theta.MC,
+      sapply(1:B, function(i) corr(Sigma.MC[,,i])))
+colnames(mcmc_diffuse) <- c("Theta_h","Theta_w", "Correlation")
+# trace plot:
+par(mfrow=c(2,2))
+for (i in 1:3){
+  plot(mcmc_diffuse[,i], type="l", xlab = colnames(mcmc_diffuse)[i])
+}
+par(mfrow=c(1,1))
+mcmc_diffuse <- mcmc_diffuse[-c(1:1000),]
+# Diffuse prior: 
+apply(mcmc_diffuse,2,quantile,c(0.025,0.975))
+# Personal defined prior:
+apply(mcmc_q74,2,quantile,c(0.025,0.975))
+```
+
+### 7.6
+
+**a**
+
+```{r q76a}
+raw <- read.table("../HW_Q/azdiabetes.dat", header = T)
+diabetes <- raw[raw$diabetes=="Yes",-8]
+no_diabetes <- raw[raw$diabetes=="No",-8]
+# diabetes:
+B <- 1e4
+p <- ncol(diabetes)
+set.seed(3)
+posterior <- lapply(list(diabetes=diabetes, no_diabetes=no_diabetes), function(df){
+  theta.MC <- matrix(0,B,p)
+  Sigma.MC <- array(0,dim=c(p,p,B))
+  mu0 <- ybar <- colMeans(df)
+  s0 <- lambda0 <- s2 <- cov(df)
+  nu0 <- 2+p
+  for (i in 1:B){
+    if(i==1){
+	    Sigma.MC[,,i] <- s2
+		  theta.MC[i,] <- ybar
+	  } 
+    if (i>1){
+	    theta.MC[i,] <- sample.theta(ybar,mu0,lambda0,n,Sigma.MC[,,(i-1)])
+		  Sigma.MC[,,i] <- sample.Sigma(df,theta.MC[i,],n,nu0,s0)
+	  }
+  }
+  return(list(mean=theta.MC, variance=Sigma.MC))
+  })
+# trace plot:
+par(mfrow=c(3,3))
+for (i in 1:7){
+  plot(posterior$diabetes$mean[,i], type="l", xlab = names(raw)[i])
+}
+for (i in 1:7){
+  plot(posterior$no_diabetes$mean[,i], type="l", xlab = names(raw)[i])
+}
+par(mfrow=c(1,1))
+posterior$diabetes$mean <- posterior$diabetes$mean[-c(1:1000),]
+posterior$no_diabetes$mean <- posterior$no_diabetes$mean[-c(1:1000),]
+
+pt <- lapply(1:p, function(col){
+  data.frame(diabetes=posterior[["diabetes"]]$mean[,col],
+             no_diabetes=posterior[["no_diabetes"]]$mean[,col]) %>%
+    pivot_longer(cols=c("diabetes","no_diabetes"), names_to = "group") %>%
+    ggplot() +
+    geom_density(aes(x=value, col=group)) + 
+    ggtitle(names(raw)[col])
+})
+ggarrange(plotlist=pt, common.legend = TRUE, legend="bottom")
+
+# P(diabetes>not diabetes|Y):
+prob <- colMeans(posterior[["diabetes"]]$mean > posterior[["no_diabetes"]]$mean)
+names(prob) <- names(raw)[-8]
+prob
+```
+
+According to the visualization and $\Pr(\theta_{d,j}>\theta_{n,j}|Y)=$ `r prob` for `r names(prob)` respectively. All variables have greater value in group that has diabetes.
+
+**b**
+
+Overall, people with no diabetes tend to have larger variance and covariance. Some of the features have similar variance/covariance in two groups since some points exist on the line with slope=1.
+
+```{r q76b}
+dia_mx <- matrix(0,7,7)
+no_diat_mx <- matrix(0,7,7)
+for (i in 1:1e4){
+  dia_mx <- dia_mx + posterior$diabetes$variance[,,i]
+  no_diat_mx <- no_diat_mx + posterior$no_diabetes$variance[,,i]
+}
+dia_mx <- dia_mx/1e4
+no_diat_mx <- no_diat_mx/1e4
+mean_cov <- NULL
+for (i in 1:7){
+  for (j in i:7){
+    mean_cov <- rbind(mean_cov,c(diabete=dia_mx[i,j],no_diabete=no_diat_mx[i,j], 
+      features=paste0(names(raw)[i]," vs. ",names(raw)[j])))
+  }
+}
+p1 <- data.frame(mean_cov) %>%
+  mutate_at(vars(diabete, no_diabete), as.numeric) %>%
+  ggplot() +
+  geom_point(aes(x=diabete, y=no_diabete, col=features)) +
+  geom_abline(slope=1, lwd=0.2, col="red") + xlim(-20,200) + ylim(-20,200)
+p2 <- data.frame(mean_cov) %>%
+  mutate_at(vars(diabete, no_diabete), as.numeric) %>%
+  ggplot() +
+  geom_point(aes(x=diabete, y=no_diabete, col=features)) +
+  geom_abline(slope=1, lwd=0.2, col="red")
+p4 <- ggarrange(p1,p2, common.legend = TRUE, legend="bottom")
+annotate_figure(p4, top = text_grob("Mean Variance/Covariance comparison"))
+data.frame(mean_cov) %>%
+  pivot_longer(cols=c("diabete", "no_diabete"), names_to = "group") %>%
+  mutate(value=as.numeric(value)) %>%
+  ggplot() +
+  geom_boxplot(aes(x=group,y=value,col=group))
+```
+

@@ -1,0 +1,149 @@
+---
+title: "Bayesien_hw4"
+author: "Ching-Tsung_Deron_Tsai"
+date: "2022/10/31"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r packages, message=FALSE, warning=FALSE}
+source("../../Feng_lab/R/ML_modeling_func/tsung_ML_functions.R")
+library(tidyverse)
+library(MASS)
+library(coda)
+sample.beta <- function(y,sigma2,Xprime.X,Xprime.y,iSigma0,iSigma0beta0){
+	
+	post.var <- solve(iSigma0+(Xprime.X/sigma2))
+	post.mean <- post.var%*%(iSigma0beta0+(Xprime.y/sigma2))
+	new.beta <- mvrnorm(1,post.mean,post.var)
+	return(new.beta)
+}
+sample.sigma2 <- function(y,X,beta,nu.n,nu0,sigma2.0,p,n, seed){
+	
+	ss.residuals <- t(y-X%*%matrix(beta,nrow=p,ncol=1))%*%(y-X%*%matrix(beta,nrow=p,ncol=1))
+	sigma2.n <- 1/(nu.n)*((nu0*sigma2.0)+ss.residuals)
+	new.sigma2 <- 1/rgamma(1,nu.n/2,(nu.n*sigma2.n)/2)
+	return(new.sigma2)
+}
+mcmc_gibbs <- function(p, m=1, y, X, Xtilde, n, nu.n, nu0, sigma2.0, Xprime.X,
+                  Xprime.y, iSigma0, iSigma0beta0, seed){
+  S=1e4
+  output.MCMC <- matrix(0,S,p+1)
+  pred.MCMC <- matrix(0,S,m)
+  set.seed(seed)
+  for(i in 1:S){
+    if(i==1){
+      output.MCMC[i,1] <- var(y)
+      output.MCMC[i,2:(p+1)] <- c(0,0)
+      pred.MCMC[i,1:m] <- mvrnorm(1,Xtilde%*%output.MCMC[i,2:(p+1)],
+                                  output.MCMC[i,1]*diag(1,m))
+    }
+    if(i>1){
+      output.MCMC[i,1] <- sample.sigma2(y,X,output.MCMC[(i-1),(2:(p+1))],
+                                        nu.n,nu0,sigma2.0,p,n)
+      output.MCMC[i,2:(p+1)] <- sample.beta(y,output.MCMC[i,1],Xprime.X,Xprime.y,iSigma0,iSigma0beta0)
+      pred.MCMC[i,1:m] <- mvrnorm(1,Xtilde%*%output.MCMC[i,2:(p+1)],
+                                  output.MCMC[i,1]*diag(1,m))
+    }
+    
+  }
+  return(list(output.MCMC, pred.MCMC))
+  
+}
+
+mc_g <- function(X, g, y, nu0, sigma2.0){
+  S=1e4
+  n <- nrow(X)
+  p <- ncol(X)
+  Hg <- (g/(g+1)) * X %*% solve(t(X) %*% X) %*% t(X)
+  SSRg <- t(y) %*% (diag(1, nrow = n) - Hg) %*% y
+  s2 <- 1/rgamma(S, (nu0 + n)/2, (nu0*sigma2.0 + SSRg)/2)
+  Vb <- g * solve(t(X) %*% X)/(g+1)
+  Eb <- Vb %*% t(X) %*% y
+  E <- matrix(rnorm(S*p, 0, sqrt(s2)), S, p)
+  beta <- t(t(E %*% chol(Vb)) + c(Eb))
+  return(list(s2, beta))
+}
+```
+
+### 9.1
+
+**a**
+
+i
+
+```{r a1}
+raw <- data.frame(read.table("../HW_Q/swim.dat"))
+# setup:
+week <- 2*1:6                             # week starting from 1
+n=6 ; p=2
+beta0 = c(23,0)                           
+X = cbind(rep(1,6),week)                  # 1*6 for intercept
+sigma2.0 = (1 / qnorm(0.975))**2          # to let 95% CI in range of 22-24
+Sigma0 = matrix(c(0.1,0,0,sigma2.0),p,p)  # weak variance for intercept
+nu0 = 1
+nu.n <- nu0+n
+S = 1e4
+m = 1
+output.MCMC <- matrix(0,S,p+1)
+pred.MCMC <- matrix(0,S,m)
+Xprime.X <- t(X)%*%X
+iSigma0 <- solve(Sigma0)
+iSigma0beta0 <- iSigma0%*%matrix(beta0,nrow=p,ncol=1)
+# new covariates:
+
+Xtilde <- matrix(c(1, 13),m,p)
+# gibb sampling loop through 4 swimmers:
+outputs <- lapply(1:4, function(w){
+  y <- as.numeric(raw[w,])
+  Xprime.y <- t(X)%*%matrix(y,nrow=n,ncol=1)
+  mcmc_gibbs(p, m, y = y, X, Xtilde, n, nu.n, nu0,
+            sigma2.0, Xprime.X, Xprime.y, iSigma0, iSigma0beta0,seed=w)
+})
+# evaluation
+par(mfrow=c(2,1))
+effsize <- sapply(1:4, function(i){
+  output <- outputs[[i]][[1]]
+    plot(output[,2],xlab="Iteration number",ylab="Beta0",type="l",col="black")
+    plot(output[,3],xlab="Iteration number",ylab="Beta1",type="l",col="black")
+    plot(output[,1],xlab="Iteration number",ylab="Sigma2",type="l",col="black")
+    acf(output[,2],main="Beta0")
+    acf(output[,3],main="Beta1")
+    acf(output[,1],main="Sigma2")
+  sapply(1:3, function(j){
+    return(effectiveSize(output[,j]))
+})
+})
+par(mfrow=c(1,1))
+colnames(effsize) <- paste0("swimmer", 1:4)
+effsize
+# set same burning & thinning for convenience
+burning <- 1000
+thinning <- 4
+```
+
+```{r a2}
+# Xtilde <- matrix(c(1, 13),m,p)
+sapply(1:4, function(i){
+  pred <- outputs[[i]][[2]][(burning):10000,1]
+  pred <- pred[seq(1, length(pred), thinning)]
+  plot(density(pred),col="black",main=paste("Day 13, swimmer", i))
+})
+```
+
+**b**
+
+Swimmer 1 should be the fastest, following by swimmer 2.
+
+```{r 1b}
+preds <- sapply(1:4, function(i) outputs[[i]][[2]][burning:1e4])  # combine the predicted values
+prop.table(table(apply(preds, 1, which.min)))
+```
+
+
+
