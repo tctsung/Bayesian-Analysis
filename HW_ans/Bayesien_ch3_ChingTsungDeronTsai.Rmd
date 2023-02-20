@@ -1,0 +1,264 @@
+---
+title: "Bayesian_HW1"
+author: "Ching-Tsung_Deron_Tsai"
+date: "2022/9/25"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r package, include=FALSE} 
+library(tidyverse)
+library(fields)
+```
+
+
+
+#### 3.1
+
+**a**
+
+$$
+\begin{aligned}
+\Pr(Y_1=y_1,...Y_{100}=y_{100}|\theta) &= \prod_{i=1}^{100}\theta^{y_i}(1-\theta)^{100-y_i} \\&= \theta^{\Sigma_{i=1}^{100} y_i}(1-\theta)^{100-\Sigma_{i=1}^{100} y_i}
+\end{aligned}
+$$
+
+$$
+\begin{aligned}
+\Pr(\Sigma Y_i=y|\theta) = \binom{100}{y}\theta^y (1-\theta)^{100-y}
+\end{aligned}
+$$
+
+**b**
+
+```{r 1b}
+prob <- function(n, y, theta){
+  x = n-y
+  return(factorial(n)/(factorial(y)*factorial(x))* theta**y * (1-theta)**(x))
+}
+theta = seq(0,1,0.1)
+probs = prob(100,57,theta=theta)
+data.frame(theta=theta, Relative_probability=round(probs, 4))
+plot(theta, probs, type = "o",ylab = "Relative probability")
+```
+
+**c**
+
+$$
+p(\theta | \Sigma^n_{i=1} Y_i=57) = \frac{p(\Sigma^n_{i=1} Y_i=57|\theta)p(\theta)}{p(\Sigma^n_{i=1} Y_i=57)} 
+\propto p(\Sigma^n_{i=1} Y_i=57|\theta)
+$$
+
+We can get the posterior distribution by the relative probabilities of question 3.1b 
+
+```{r 1c}
+new_probs = probs/sum(probs)
+data.frame(theta=theta, probability=round(new_probs, 4))
+plot(theta, new_probs, type = "o",ylab = "Probability")
+```
+
+**d**
+
+$$
+p(\theta)*\Pr(\Sigma_{i=1}^n Y_i = 57|\theta) = p(\theta) \binom{100}{57}\theta^{57} (1-\theta)^{100-57} = \binom{100}{57}\theta^{57} (1-\theta)^{100-57} 
+$$
+
+```{r 1d}
+theta=seq(0,1,1e-4)
+probs = prob(n=100, y=57, theta=theta)
+plot(theta, probs, type = "l", ylab = "Posterior density")
+```
+
+**e**
+
+```{r 1e}
+betas = dbeta(seq(0,1,1e-4), shape1=58, shape2=44)
+plot(theta, betas, type="l", ylab="Density")
+```
+
+Discussion:
+1b and 1e is the posterior before normalization. 
+
+1c is the posterior after scaling
+
+e is the posterior density given a uniform prior $Beta(1,1)$
+
+#### 3.2
+
+```{r q2}
+theta0s = seq(0.1,0.9, 0.1)
+n0s = c(1,2,8,16,32)
+w = 0.5
+n = 100
+y = 57
+
+prior_as <- n0s %*% t(theta0s)
+prior_bs <- n0s %*% t((1-theta0s))
+post_prob <- matrix(nrow = length(n0s), ncol = length(theta0s))
+post_a <- prior_as + y
+post_b <- prior_bs + n - y
+
+for (i in 1:length(n0s)){
+  for (j in 1:length(theta0s)){
+    post_prob[i,j] <- 1-pbeta(w,post_a[i,j],post_b[i,j])
+  }
+}
+contour(n0s,theta0s,post_prob)
+image.plot(n0s, theta0s,post_prob,xlab="n0",ylab="theta0",
+           main="p(theta > 0.5 | y)",col=heat.colors(100)[1:90])
+```
+
+From the 2D contour plot, we could say that most priors result in posterior theta > 0.5 except those with very large n0 and very small theta0.
+
+3.4
+
+**a**
+
+$$
+\begin{aligned}
+&p(\theta) \sim Beta(2,8) \\
+&p(y|\theta) \sim Binomial(43,\theta) \\
+&p(\theta|y) \sim Beta(15+2,43-15+8) \equiv Beta(17,36) \\
+&E(\theta|y) = 17/(17+36) \approx 0.3207 \\
+&Mode = \arg \max f(\theta|y) = (17-1)/(17+36-2) \approx 0.3137 \\
+&Var(\theta|y) = [17/(17+36)\cdot (36/17+36)] / (17+36+1) \approx 0.0635 \\
+&95 \% \text{Confidence Interval}: (0.2033,0.4510)
+\end{aligned}
+$$
+
+```{r q4a}
+y = 15
+n = 43
+a = 2
+b = 8
+theta = seq(0,1,1e-3)
+ploting <- function(theta,y,n,a,b){
+  new_a = y + a
+  new_b = n-y+b
+  plot(theta, dbeta(theta,a,b), type="l", ylab="p(theta)")   
+  plot(theta, dbinom(y,n,theta), type="l", ylab="p(y|theta)")
+  plot(theta, dbeta(theta,a+y,b+n-y), type="l", ylab="p(theta)")
+  x1 <- data.frame(mean=new_a/(new_a+new_b),
+             mode=(new_a-1)/(new_a+new_b-2),
+             sd=sqrt((new_a/(new_a+new_b))*(new_b/(new_a+new_b))/(new_a+new_b+1)),
+             Confidence_Interval=paste(round(qbeta(c(0.025, 0.975), new_a, new_b),4), collapse = ",")
+             )
+  rownames(x1) <- paste0("Beta(",a,",",b,")")
+  return(x1)
+}
+ploting(theta=theta, y=y,n=n,a=a,b=b)
+```
+
+**b**
+
+Since they're the same but a & b switched, I used the exact same function created from q3.4a for $p(\theta|y)\sim Beta(23,30)$
+
+$$
+\begin{aligned}
+&Mean \approx 0.4340\\
+&Mode \approx 0.4314\\
+&sd \approx 0.0674\\
+&95 \% CI: (0.3047,0.5680) 
+\end{aligned}
+$$
+
+```{r q4b}
+ploting(theta=theta, y=y,n=n,a=b,b=a)
+```
+
+**c**
+
+The mixture shows a split prior opinions at around 0.125 and around 0.875. 
+
+```{r q4c}
+mixture = 0.75*dbeta(theta,2,8) + 0.25*dbeta(theta,8,2)
+df <- data.frame(theta=theta, beta28=dbeta(theta,2,8),
+           beta82=dbeta(theta,8,2), mixture=mixture) %>%
+  pivot_longer(cols=c("beta28", "beta82", "mixture"), names_to="group", values_to = "density")
+ggplot(df) +
+  geom_line(aes(x=theta, y=density,col=group))
+```
+
+**d**
+
+i
+
+```{r q4d}
+gamma(10)/(gamma(2)*gamma(8))/4
+```
+
+
+$$
+p(\theta) * p(y|\theta) = 18[3\theta (1-\theta)^7+\theta^7(1-\theta)]*[\binom{43}{15}\theta^{15}(1-\theta)^{28}] \\
+= 18\binom{43}{15}[3\theta^{16}(1-\theta)^{35}+\theta^{22}(1-\theta)^{29}] \\
+= 18\binom{43}{15}\theta^{16}(1-\theta)^{29}[3(1-\theta)^6+\theta^6]
+$$
+
+ii
+
+Since $p(\theta|y) \propto p(\theta) * p(y|\theta)$, the posterior distribution should be a mixture of the posteriors in above question 3.4a and 3.4b. 
+
+iii
+
+```{r q4d2}
+new_dens <- function(theta){
+  18*(factorial(43)/(factorial(15)*factorial(43-15)))*(3*theta**16*(1-theta)**35 
+                                                       + theta**22*(1-theta)**29)
+}
+posterior <- new_dens(theta=theta)
+plot(theta, posterior,type = "l", ylab="Posterior")
+max(posterior)
+(mode = theta[which.max(posterior)])   # approximated mode
+```
+
+The posterior mode is approximately `r mode`, which is closer to the mode of question a. (with prior Beta(2,8))
+
+**e**
+
+Let $w * f_1(\theta|y)+ (1-w)f_2(\theta|y)$ where $ f_1(\theta|y) \sim Beta(17,36)$ and $f_2(\theta|y) \sim Beta(23,30)$ 
+
+$$
+p(\theta|y) \propto p(\theta)p(y|\theta) = w \frac{\Gamma(17+36)}{\Gamma(17)\Gamma(36)} + (1-w)\frac{\Gamma(23+30)}{\Gamma(23)\Gamma(30)}
+\\
+18\binom{43}{15}[3* \theta^{17-1}*(1-\theta)^{36-1}+\theta^{23-1} (1-\theta)^{30-1}] \\
+= 18*\frac{43!}{15! 28!}*3*\frac{16!35!}{52!}*\frac{\Gamma(17+36)}{\Gamma(17)\Gamma(36)}\theta^{17-1}*(1-\theta)^{36-1} \\
++ 18*\frac{43!}{15! 28!}*\frac{22!29!}{52!}*\frac{\Gamma(23+30)}{\Gamma(23)\Gamma(30)}*\theta^{23-1} (1-\theta)^{30-1} \\
+\frac{w}{1-w} = (3*16!35!)/(22!29!) \\
+w \approx 0.984
+$$
+
+```{r q4e}
+# w/(1-w) = 
+x = 30*31*32*33*34*35/(22*21*20*19*6*17)
+w = x/(1+x)
+w
+```
+
+
+
+
+#### 3.9
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
